@@ -1,0 +1,101 @@
+# GitHub Scout AI - Domain Configuration
+# Define search terms and priorities for each domain
+
+domains:
+  developer-tools:
+    priority: 0  # P0 = highest priority
+    search_terms:
+      - cli
+      - sdk
+      - devtools
+      - developer-tools
+      - developer-experience
+    description: Tools that improve developer productivity
+
+  productivity:
+    priority: 0
+    search_terms:
+      - productivity
+      - automation
+      - workflow
+      - task-management
+    description: Tools for personal and team productivity
+
+  ai-ml:
+    priority: 0
+    search_terms:
+      - machine-learning
+      - llm
+      - ai
+      - nlp
+      - deep-learning
+      - generative-ai
+    description: AI and machine learning tools and frameworks
+
+  data:
+    priority: 1
+    search_terms:
+      - data-analysis
+      - analytics
+      - etl
+      - database
+      - data-engineering
+    description: Data processing and analytics tools
+
+  infrastructure:
+    priority: 1
+    search_terms:
+      - devops
+      - kubernetes
+      - monitoring
+      - cloud
+      - infrastructure-as-code
+    description: Infrastructure and DevOps tools
+
+  fintech:
+    priority: 1
+    search_terms:
+      - payments
+      - crypto
+      - trading
+      - finance
+      - blockchain
+    description: Financial technology and crypto
+
+  automation:
+    priority: 1
+    search_terms:
+      - automation
+      - bots
+      - scraping
+      - rpa
+      - no-code
+    description: Automation and no-code tools
+
+  security:
+    priority: 2
+    search_terms:
+      - security
+      - privacy
+      - encryption
+      - authentication
+      - cybersecurity
+    description: Security and privacy tools
+
+  healthcare:
+    priority: 2
+    search_terms:
+      - health
+      - medical
+      - telemedicine
+      - healthcare
+    description: Healthcare technology
+
+  education:
+    priority: 2
+    search_terms:
+      - learning
+      - education
+      - tutorial
+      - e-learning
+    description: Educational tools and platforms

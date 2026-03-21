@@ -1,0 +1,23 @@
+🔭 *GitHub Scout Daily Digest*
+📅 {{ run_date }}
+
+{% if stats %}
+📊 Scanned {{ stats.scanned }} repos → Filtered {{ stats.filtered }} → Analyzed {{ stats.analyzed }}
+{% endif %}
+
+{% for scored in repos %}
+*{{ loop.index }}. [{{ scored.repository.name }}]({{ scored.repository.url }})*
+{% if scored.repository.language %}🔤 {{ scored.repository.language }} | {% endif %}⭐ {{ "{:,}".format(scored.repository.stars) }} | 🍴 {{ "{:,}".format(scored.repository.forks) }} | 📊 {{ "%.2f"|format(scored.score) }}
+
+{% if scored.repository.description %}
+_{{ scored.repository.description[:150] }}{% if scored.repository.description|length > 150 %}...{% endif %}_
+{% endif %}
+
+{% if scored.repository.topics %}
+🏷️ {% for topic in scored.repository.topics[:5] %}`{{ topic }}`{% if not loop.last %} {% endif %}{% endfor %}
+{% endif %}
+
+{% endfor %}
+─────────────────────────────
+
+_Use /digest for on-demand refresh | /help for commands_

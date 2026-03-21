@@ -1,0 +1,17 @@
+# GitHub Scout AI - Railway Configuration
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "python -m src.main"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
+
+# Persistent volume for SQLite database
+[[mounts]]
+source = "scout-data"
+destination = "/data"

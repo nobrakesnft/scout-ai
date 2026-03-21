@@ -1,0 +1,35 @@
+# GitHub Scout AI - Dependencies
+# Phase 1: Core functionality (no AI yet)
+
+# Core
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# GitHub API
+PyGithub>=2.1.0
+
+# Telegram
+python-telegram-bot>=20.7
+
+# Web Framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+
+# Scheduler
+apscheduler>=3.10.0
+
+# Templates
+jinja2>=3.1.0
+
+# Database
+aiosqlite>=0.19.0
+
+# Utilities
+httpx>=0.26.0
+python-dotenv>=1.0.0
+structlog>=24.1.0
+tenacity>=8.2.0
+
+# Phase 2+ (AI) - uncomment when needed and use Python 3.12
+# crewai>=0.28.0
+# openai>=1.12.0
