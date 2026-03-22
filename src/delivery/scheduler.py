@@ -79,7 +79,7 @@ class DigestScheduler:
             logger.exception("Digest check failed", error=str(e))
 
     async def _send_digest_to_user(self, user_prefs: dict) -> None:
-        """Send a digest to a specific user. 5 regular repos + 2 Web3 = 7 total."""
+        """Send a digest to a specific user. 5 regular repos + 5 Web3 = 10 total."""
         try:
             telegram_id = user_prefs["telegram_id"]
             domains = user_prefs.get("domains") or None
@@ -106,7 +106,11 @@ class DigestScheduler:
             web3_filtered = self.filter.filter_repos(web3_repos) if web3_repos else []
 
             regular_scored = self.scorer.score_repos(regular_filtered, top_n=5)
-            web3_scored = self.scorer.score_repos(web3_filtered, top_n=2)
+
+            # Deduplicate: remove Web3 repos already in regular results
+            regular_ids = {r.repository.github_id for r in regular_scored}
+            web3_filtered_deduped = [r for r in web3_filtered if r.github_id not in regular_ids]
+            web3_scored = self.scorer.score_repos(web3_filtered_deduped, top_n=5)
 
             total_count = len(regular_scored) + len(web3_scored)
 

@@ -171,7 +171,11 @@ class TelegramBot:
             web3_filtered = self.filter.filter_repos(web3_repos) if web3_repos else []
 
             regular_scored = self.scorer.score_repos(regular_filtered, top_n=5)
-            web3_scored = self.scorer.score_repos(web3_filtered, top_n=2)
+
+            # Deduplicate: remove Web3 repos already in regular results
+            regular_ids = {r.repository.github_id for r in regular_scored}
+            web3_filtered_deduped = [r for r in web3_filtered if r.github_id not in regular_ids]
+            web3_scored = self.scorer.score_repos(web3_filtered_deduped, top_n=2)
 
             # Combine all results
             all_scored = regular_scored + web3_scored
@@ -265,7 +269,11 @@ class TelegramBot:
             web3_filtered = self.filter.filter_repos(web3_repos) if web3_repos else []
 
             regular_scored = self.scorer.score_repos(regular_filtered, top_n=5)
-            web3_scored = self.scorer.score_repos(web3_filtered, top_n=2)
+
+            # Deduplicate: remove Web3 repos already in regular results
+            regular_ids = {r.repository.github_id for r in regular_scored}
+            web3_filtered_deduped = [r for r in web3_filtered if r.github_id not in regular_ids]
+            web3_scored = self.scorer.score_repos(web3_filtered_deduped, top_n=2)
 
             # Combine all results
             all_scored = regular_scored + web3_scored
@@ -551,7 +559,11 @@ class TelegramBot:
             web3_filtered = self.filter.filter_repos(web3_repos) if web3_repos else []
 
             regular_scored = self.scorer.score_repos(regular_filtered, top_n=5)
-            web3_scored = self.scorer.score_repos(web3_filtered, top_n=2)
+
+            # Deduplicate: remove Web3 repos already in regular results
+            regular_ids = {r.repository.github_id for r in regular_scored}
+            web3_filtered_deduped = [r for r in web3_filtered if r.github_id not in regular_ids]
+            web3_scored = self.scorer.score_repos(web3_filtered_deduped, top_n=2)
 
             all_scored = regular_scored + web3_scored
             total_count = len(all_scored)
@@ -620,7 +632,11 @@ class TelegramBot:
             web3_filtered = self.filter.filter_repos(web3_repos) if web3_repos else []
 
             regular_scored = self.scorer.score_repos(regular_filtered, top_n=5)
-            web3_scored = self.scorer.score_repos(web3_filtered, top_n=2)
+
+            # Deduplicate: remove Web3 repos already in regular results
+            regular_ids = {r.repository.github_id for r in regular_scored}
+            web3_filtered_deduped = [r for r in web3_filtered if r.github_id not in regular_ids]
+            web3_scored = self.scorer.score_repos(web3_filtered_deduped, top_n=2)
 
             all_scored = regular_scored + web3_scored
             total_count = len(all_scored)
