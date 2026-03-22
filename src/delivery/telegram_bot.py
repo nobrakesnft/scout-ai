@@ -152,34 +152,58 @@ class TelegramBot:
             domains = prefs.get("domains") if prefs and prefs.get("domains") else None
             min_stars = prefs.get("min_stars", 50) if prefs else 50
 
-            # Scan GitHub
-            repos = self.scanner.scan_trending(
+            # Scan regular repos (5)
+            regular_repos = self.scanner.scan_trending(
                 domains=domains,
                 min_stars=min_stars,
                 max_results_per_domain=5
             )
 
-            if not repos:
+            # Scan Web3 repos (2) - always included!
+            web3_repos = self.scanner.scan_trending(
+                domains=["web3"],
+                min_stars=25,
+                max_results_per_domain=5
+            )
+
+            # Filter and score both
+            regular_filtered = self.filter.filter_repos(regular_repos) if regular_repos else []
+            web3_filtered = self.filter.filter_repos(web3_repos) if web3_repos else []
+
+            regular_scored = self.scorer.score_repos(regular_filtered, top_n=5)
+            web3_scored = self.scorer.score_repos(web3_filtered, top_n=2)
+
+            # Combine all results
+            all_scored = regular_scored + web3_scored
+            total_count = len(all_scored)
+
+            if total_count == 0:
                 await update.message.reply_text("😕 Couldn't find any projects. Try again later!")
                 return
 
-            # Filter and score
-            filtered = self.filter.filter_repos(repos)
-            scored = self.scorer.score_repos(filtered, top_n=5)
-
             # Save to cache
-            self.cache.save_scan(scored)
+            self.cache.save_scan(all_scored)
 
             # Send header
             await update.message.reply_text(
-                f"✨ *Found {len(scored)} cool projects!*\n\n"
+                f"✨ *Found {total_count} cool projects!*\n\n"
                 "Tap any project to get business ideas for it 👇",
                 parse_mode="Markdown",
             )
 
-            # Send each repo with buttons
-            for scored_repo in scored:
-                await self._send_repo_card(update.message.chat_id, scored_repo, user_id)
+            # Send regular repos
+            if regular_scored:
+                for scored_repo in regular_scored:
+                    await self._send_repo_card(update.message.chat_id, scored_repo, user_id)
+
+            # Send Web3 repos with header
+            if web3_scored:
+                await update.message.reply_text(
+                    "🔗 *Web3 / Crypto Projects:*",
+                    parse_mode="Markdown",
+                )
+                for scored_repo in web3_scored:
+                    await self._send_repo_card(update.message.chat_id, scored_repo, user_id)
 
             # Send footer
             keyboard = InlineKeyboardMarkup([
@@ -220,34 +244,59 @@ class TelegramBot:
             user_id = str(update.effective_user.id)
             prefs = await self.db.get_preferences(user_id)
             domains = prefs.get("domains") if prefs and prefs.get("domains") else None
-            min_stars = prefs.get("min_stars", 100) if prefs else 100
+            min_stars = prefs.get("min_stars", 50) if prefs else 50
 
-            # Scan
-            repos = self.scanner.scan_trending(
+            # Scan regular repos (5)
+            regular_repos = self.scanner.scan_trending(
                 domains=domains,
                 min_stars=min_stars,
-                max_results_per_domain=3
+                max_results_per_domain=5
             )
 
-            if not repos:
+            # Scan Web3 repos (2)
+            web3_repos = self.scanner.scan_trending(
+                domains=["web3"],
+                min_stars=25,
+                max_results_per_domain=5
+            )
+
+            # Filter and score both
+            regular_filtered = self.filter.filter_repos(regular_repos) if regular_repos else []
+            web3_filtered = self.filter.filter_repos(web3_repos) if web3_repos else []
+
+            regular_scored = self.scorer.score_repos(regular_filtered, top_n=5)
+            web3_scored = self.scorer.score_repos(web3_filtered, top_n=2)
+
+            # Combine all results
+            all_scored = regular_scored + web3_scored
+            total_count = len(all_scored)
+
+            if total_count == 0:
                 await update.message.reply_text("😕 Couldn't find any projects. Try again later!")
                 return
 
-            filtered = self.filter.filter_repos(repos)
-            scored = self.scorer.score_repos(filtered, top_n=3)
-
             # Save to cache
-            self.cache.save_scan(scored)
+            self.cache.save_scan(all_scored)
 
             await update.message.reply_text(
-                f"✨ *Found {len(scored)} projects!*\n\n"
+                f"✨ *Found {total_count} cool projects!*\n\n"
                 "Now thinking of business ideas... 🧠",
                 parse_mode="Markdown",
             )
 
-            # Analyze each with AI
-            for scored_repo in scored:
-                await self._send_repo_with_ideas(update.message.chat_id, scored_repo, user_id)
+            # Analyze regular repos
+            if regular_scored:
+                for scored_repo in regular_scored:
+                    await self._send_repo_with_ideas(update.message.chat_id, scored_repo, user_id)
+
+            # Analyze Web3 repos with header
+            if web3_scored:
+                await update.message.reply_text(
+                    "🔗 *Web3 / Crypto Ideas:*",
+                    parse_mode="Markdown",
+                )
+                for scored_repo in web3_scored:
+                    await self._send_repo_with_ideas(update.message.chat_id, scored_repo, user_id)
 
             await update.message.reply_text(
                 "✅ *Done!*\n\n"
@@ -470,7 +519,7 @@ class TelegramBot:
     # ==================== ACTION HANDLERS ====================
 
     async def _do_find(self, chat_id: int, user_id: str) -> None:
-        """Find projects (triggered by button)."""
+        """Find projects (triggered by button). 5 regular + 2 Web3 = 7 total."""
 
         await self.app.bot.send_message(
             chat_id=chat_id,
@@ -483,34 +532,59 @@ class TelegramBot:
             domains = prefs.get("domains") if prefs and prefs.get("domains") else None
             min_stars = prefs.get("min_stars", 50) if prefs else 50
 
-            repos = self.scanner.scan_trending(
+            # Scan regular repos (5)
+            regular_repos = self.scanner.scan_trending(
                 domains=domains,
                 min_stars=min_stars,
                 max_results_per_domain=5
             )
 
-            if not repos:
+            # Scan Web3 repos (2)
+            web3_repos = self.scanner.scan_trending(
+                domains=["web3"],
+                min_stars=25,
+                max_results_per_domain=5
+            )
+
+            # Filter and score both
+            regular_filtered = self.filter.filter_repos(regular_repos) if regular_repos else []
+            web3_filtered = self.filter.filter_repos(web3_repos) if web3_repos else []
+
+            regular_scored = self.scorer.score_repos(regular_filtered, top_n=5)
+            web3_scored = self.scorer.score_repos(web3_filtered, top_n=2)
+
+            all_scored = regular_scored + web3_scored
+            total_count = len(all_scored)
+
+            if total_count == 0:
                 await self.app.bot.send_message(chat_id=chat_id, text="😕 No projects found!")
                 return
 
-            filtered = self.filter.filter_repos(repos)
-            scored = self.scorer.score_repos(filtered, top_n=5)
-            self.cache.save_scan(scored)
+            self.cache.save_scan(all_scored)
 
             await self.app.bot.send_message(
                 chat_id=chat_id,
-                text=f"✨ *Found {len(scored)} cool projects!*\n\nTap any to get ideas 👇",
+                text=f"✨ *Found {total_count} cool projects!*\n\nTap any to get ideas 👇",
                 parse_mode="Markdown",
             )
 
-            for scored_repo in scored:
+            for scored_repo in regular_scored:
                 await self._send_repo_card(chat_id, scored_repo, user_id)
+
+            if web3_scored:
+                await self.app.bot.send_message(
+                    chat_id=chat_id,
+                    text="🔗 *Web3 / Crypto Projects:*",
+                    parse_mode="Markdown",
+                )
+                for scored_repo in web3_scored:
+                    await self._send_repo_card(chat_id, scored_repo, user_id)
 
         except Exception as e:
             await self.app.bot.send_message(chat_id=chat_id, text=f"😕 Error: {str(e)[:50]}")
 
     async def _do_ideas(self, chat_id: int, user_id: str) -> None:
-        """Full ideas flow (triggered by button)."""
+        """Full ideas flow (triggered by button). 5 regular + 2 Web3 = 7 total."""
 
         if not self.ai_enabled:
             await self.app.bot.send_message(chat_id=chat_id, text="😕 AI not available!")
@@ -525,24 +599,55 @@ class TelegramBot:
         try:
             prefs = await self.db.get_preferences(user_id)
             domains = prefs.get("domains") if prefs and prefs.get("domains") else None
-            min_stars = prefs.get("min_stars", 100) if prefs else 100
+            min_stars = prefs.get("min_stars", 50) if prefs else 50
 
-            repos = self.scanner.scan_trending(
+            # Scan regular repos (5)
+            regular_repos = self.scanner.scan_trending(
                 domains=domains,
                 min_stars=min_stars,
-                max_results_per_domain=3
+                max_results_per_domain=5
             )
 
-            if not repos:
+            # Scan Web3 repos (2)
+            web3_repos = self.scanner.scan_trending(
+                domains=["web3"],
+                min_stars=25,
+                max_results_per_domain=5
+            )
+
+            # Filter and score both
+            regular_filtered = self.filter.filter_repos(regular_repos) if regular_repos else []
+            web3_filtered = self.filter.filter_repos(web3_repos) if web3_repos else []
+
+            regular_scored = self.scorer.score_repos(regular_filtered, top_n=5)
+            web3_scored = self.scorer.score_repos(web3_filtered, top_n=2)
+
+            all_scored = regular_scored + web3_scored
+            total_count = len(all_scored)
+
+            if total_count == 0:
                 await self.app.bot.send_message(chat_id=chat_id, text="😕 No projects found!")
                 return
 
-            filtered = self.filter.filter_repos(repos)
-            scored = self.scorer.score_repos(filtered, top_n=3)
-            self.cache.save_scan(scored)
+            self.cache.save_scan(all_scored)
 
-            for scored_repo in scored:
+            await self.app.bot.send_message(
+                chat_id=chat_id,
+                text=f"✨ *Found {total_count} cool projects!*\n\nNow thinking of business ideas... 🧠",
+                parse_mode="Markdown",
+            )
+
+            for scored_repo in regular_scored:
                 await self._send_repo_with_ideas(chat_id, scored_repo, user_id)
+
+            if web3_scored:
+                await self.app.bot.send_message(
+                    chat_id=chat_id,
+                    text="🔗 *Web3 / Crypto Ideas:*",
+                    parse_mode="Markdown",
+                )
+                for scored_repo in web3_scored:
+                    await self._send_repo_with_ideas(chat_id, scored_repo, user_id)
 
             await self.app.bot.send_message(
                 chat_id=chat_id,
