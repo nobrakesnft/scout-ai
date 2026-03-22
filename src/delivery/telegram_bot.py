@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, time
 from typing import Dict, List, Optional
 
 import structlog
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -107,6 +107,7 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("scan", self._cmd_find))  # alias
         self.app.add_handler(CommandHandler("ideas", self._cmd_ideas))
         self.app.add_handler(CommandHandler("web3", self._cmd_web3))
+        self.app.add_handler(CommandHandler("digest", self._cmd_digest))
         self.app.add_handler(CommandHandler("saved", self._cmd_saved))
         self.app.add_handler(CommandHandler("settings", self._cmd_settings))
         self.app.add_handler(CommandHandler("help", self._cmd_help))
@@ -122,6 +123,7 @@ class TelegramBot:
             [InlineKeyboardButton("🔍 Find Cool Projects", callback_data="action:find")],
             [InlineKeyboardButton("💡 Find Projects + Get Ideas", callback_data="action:ideas")],
             [InlineKeyboardButton("🔗 Web3 / Crypto / NFT", callback_data="action:web3")],
+            [InlineKeyboardButton("📫 My Daily Digest", callback_data="action:digest")],
             [InlineKeyboardButton("⭐ My Saved Projects", callback_data="action:saved")],
             [InlineKeyboardButton("⚙️ Settings", callback_data="action:settings")],
         ])
@@ -374,6 +376,12 @@ class TelegramBot:
             logger.exception("Web3 scan failed", error=str(e))
             await update.message.reply_text(f"😕 Something went wrong: {str(e)[:50]}")
 
+    async def _cmd_digest(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Manual daily digest - shows NEW projects only with AI ideas."""
+        await self._ensure_db()
+        user_id = str(update.effective_user.id)
+        await self._do_digest(update.message.chat_id, user_id)
+
     async def _cmd_saved(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Show saved/bookmarked projects."""
         await self._ensure_db()
@@ -445,6 +453,7 @@ class TelegramBot:
             "🔍 /find - Find cool projects\n"
             "💡 /ideas - Find projects + get business ideas\n"
             "🔗 /web3 - Find crypto/NFT/blockchain projects\n"
+            "📫 /digest - Your daily digest (NEW projects only!)\n"
             "⭐ /saved - See your bookmarked projects\n"
             "⚙️ /settings - Change your preferences\n"
             "❓ /help - See this message\n\n"
@@ -453,6 +462,9 @@ class TelegramBot:
             "2️⃣ I pick the best ones\n"
             "3️⃣ You can tap ⭐ to save any project\n"
             "4️⃣ Tap 💡 to get business ideas!\n\n"
+            "*Daily Digest:*\n"
+            "📫 /digest shows 10 NEW projects you haven't seen\n"
+            "Each comes with 2 AI business ideas!\n\n"
             "That's it! Super easy 🎉",
             parse_mode="Markdown",
         )
@@ -479,6 +491,9 @@ class TelegramBot:
 
         elif data == "action:web3":
             await self._do_web3(chat_id, user_id)
+
+        elif data == "action:digest":
+            await self._do_digest(chat_id, user_id)
 
         elif data == "action:ideas_cached":
             await self._do_ideas_cached(chat_id, user_id)
@@ -708,6 +723,123 @@ class TelegramBot:
                 await self._send_repo_card(chat_id, scored_repo, user_id)
 
         except Exception as e:
+            await self.app.bot.send_message(chat_id=chat_id, text=f"😕 Error: {str(e)[:50]}")
+
+    async def _do_digest(self, chat_id: int, user_id: str) -> None:
+        """Manual daily digest - 5 regular + 5 Web3 = 10 NEW projects with AI ideas."""
+
+        if not self.ai_enabled:
+            await self.app.bot.send_message(chat_id=chat_id, text="😕 AI not available!")
+            return
+
+        await self.app.bot.send_message(
+            chat_id=chat_id,
+            text="📫 *Getting your personalized digest...*\n\n"
+                 "Finding NEW projects you haven't seen + generating ideas 💡\n\n"
+                 "This takes 1-2 minutes ⏳",
+            parse_mode="Markdown",
+        )
+
+        try:
+            # Get user preferences
+            prefs = await self.db.get_preferences(user_id)
+            domains = prefs.get("domains") if prefs and prefs.get("domains") else None
+            min_stars = prefs.get("min_stars", 50) if prefs else 50
+
+            # Get repos this user has already seen
+            seen_ids = await self.db.get_seen_repo_ids_for_user(user_id)
+
+            # Scan regular repos
+            regular_repos = self.scanner.scan_trending(
+                domains=domains,
+                min_stars=min_stars,
+                max_results_per_domain=5,
+            )
+
+            # Scan Web3 repos
+            web3_repos = self.scanner.scan_trending(
+                domains=["web3"],
+                min_stars=25,
+                max_results_per_domain=10,
+            )
+
+            # Filter out already seen repos
+            regular_repos_new = [r for r in regular_repos if r.github_id not in seen_ids] if regular_repos else []
+            web3_repos_new = [r for r in web3_repos if r.github_id not in seen_ids] if web3_repos else []
+
+            # Filter and score
+            regular_filtered = self.filter.filter_repos(regular_repos_new) if regular_repos_new else []
+            web3_filtered = self.filter.filter_repos(web3_repos_new) if web3_repos_new else []
+
+            regular_scored = self.scorer.score_repos(regular_filtered, top_n=5)
+
+            # Deduplicate: remove Web3 repos already in regular results
+            regular_ids = {r.repository.github_id for r in regular_scored}
+            web3_filtered_deduped = [r for r in web3_filtered if r.github_id not in regular_ids]
+            web3_scored = self.scorer.score_repos(web3_filtered_deduped, top_n=5)
+
+            all_scored = regular_scored + web3_scored
+            total_count = len(all_scored)
+
+            if total_count == 0:
+                await self.app.bot.send_message(
+                    chat_id=chat_id,
+                    text="📫 *Daily Digest*\n\n"
+                         "No NEW projects today - you've seen all the trending ones!\n\n"
+                         "Check back tomorrow, or use /find to browse (may show repeats).",
+                    parse_mode="Markdown",
+                )
+                return
+
+            # Save to cache
+            self.cache.save_scan(all_scored)
+
+            # Send header
+            await self.app.bot.send_message(
+                chat_id=chat_id,
+                text=f"📫 *Your Daily Digest*\n\n"
+                     f"Found {total_count} NEW projects with business ideas! 👇",
+                parse_mode="Markdown",
+            )
+
+            # Track repos we're sending
+            sent_repo_ids = []
+
+            # Send regular repos with AI ideas
+            if regular_scored:
+                await self.app.bot.send_message(
+                    chat_id=chat_id,
+                    text="🔥 *Trending Projects + Ideas*",
+                    parse_mode="Markdown",
+                )
+                for scored_repo in regular_scored:
+                    await self._send_repo_with_ideas(chat_id, scored_repo, user_id)
+                    sent_repo_ids.append(scored_repo.repository.github_id)
+
+            # Send Web3 repos with AI ideas
+            if web3_scored:
+                await self.app.bot.send_message(
+                    chat_id=chat_id,
+                    text="🔗 *Web3 / Crypto Projects + Ideas*",
+                    parse_mode="Markdown",
+                )
+                for scored_repo in web3_scored:
+                    await self._send_repo_with_ideas(chat_id, scored_repo, user_id)
+                    sent_repo_ids.append(scored_repo.repository.github_id)
+
+            # Mark all sent repos as seen
+            await self.db.mark_repos_as_seen(user_id, sent_repo_ids)
+
+            # Send footer
+            await self.app.bot.send_message(
+                chat_id=chat_id,
+                text=f"✅ *{total_count} projects with {total_count * 2} business ideas!*\n\n"
+                     "Use /find to explore more, /web3 for crypto, or /settings to change preferences.",
+                parse_mode="Markdown",
+            )
+
+        except Exception as e:
+            logger.exception("Digest failed", error=str(e))
             await self.app.bot.send_message(chat_id=chat_id, text=f"😕 Error: {str(e)[:50]}")
 
     async def _do_ideas_cached(self, chat_id: int, user_id: str) -> None:
@@ -1134,11 +1266,25 @@ class TelegramBot:
             )
 
     async def post_init(self, app) -> None:
-        """Called after bot starts - initialize scheduler."""
+        """Called after bot starts - initialize scheduler and set commands menu."""
         from src.delivery.scheduler import DigestScheduler
         self.scheduler = DigestScheduler(app)
         self.scheduler.start()
         logger.info("Daily digest scheduler started")
+
+        # Set bot commands for the menu button beside chat bar
+        commands = [
+            BotCommand("start", "🏠 Main menu"),
+            BotCommand("find", "🔍 Find cool projects"),
+            BotCommand("ideas", "💡 Find projects + get ideas"),
+            BotCommand("web3", "🔗 Web3/crypto/NFT projects"),
+            BotCommand("digest", "📫 Your daily digest (NEW only)"),
+            BotCommand("saved", "⭐ Your saved projects"),
+            BotCommand("settings", "⚙️ Change preferences"),
+            BotCommand("help", "❓ How to use this bot"),
+        ]
+        await app.bot.set_my_commands(commands)
+        logger.info("Bot commands menu set")
 
     def run_polling(self) -> None:
         """Start the bot!"""
