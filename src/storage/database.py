@@ -116,10 +116,25 @@ class Database:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS bookmarks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id TEXT NOT NULL,
+                github_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                full_name TEXT NOT NULL,
+                description TEXT,
+                url TEXT NOT NULL,
+                stars INTEGER DEFAULT 0,
+                language TEXT,
+                saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(telegram_id, github_id)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_repos_github_id ON repositories(github_id);
             CREATE INDEX IF NOT EXISTS idx_repos_discovered ON repositories(discovered_at);
             CREATE INDEX IF NOT EXISTS idx_ideas_status ON ideas(status);
             CREATE INDEX IF NOT EXISTS idx_runs_started ON runs(started_at);
+            CREATE INDEX IF NOT EXISTS idx_bookmarks_user ON bookmarks(telegram_id);
         """)
         await self._connection.commit()
 
@@ -183,3 +198,136 @@ class Database:
             (*updates.values(), run_id),
         )
         await self._connection.commit()
+
+    # ==================== BOOKMARKS ====================
+
+    async def save_bookmark(
+        self,
+        telegram_id: str,
+        github_id: str,
+        name: str,
+        full_name: str,
+        description: str | None,
+        url: str,
+        stars: int,
+        language: str | None,
+    ) -> bool:
+        """Save a bookmark. Returns True if new, False if already existed."""
+        try:
+            await self._connection.execute(
+                """
+                INSERT INTO bookmarks (
+                    telegram_id, github_id, name, full_name, description, url, stars, language
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (telegram_id, github_id, name, full_name, description, url, stars, language),
+            )
+            await self._connection.commit()
+            return True
+        except aiosqlite.IntegrityError:
+            return False
+
+    async def remove_bookmark(self, telegram_id: str, github_id: str) -> bool:
+        """Remove a bookmark. Returns True if removed, False if didn't exist."""
+        cursor = await self._connection.execute(
+            "DELETE FROM bookmarks WHERE telegram_id = ? AND github_id = ?",
+            (telegram_id, github_id),
+        )
+        await self._connection.commit()
+        return cursor.rowcount > 0
+
+    async def get_bookmarks(self, telegram_id: str) -> list[dict]:
+        """Get all bookmarks for a user."""
+        cursor = await self._connection.execute(
+            """
+            SELECT github_id, name, full_name, description, url, stars, language, saved_at
+            FROM bookmarks
+            WHERE telegram_id = ?
+            ORDER BY saved_at DESC
+            """,
+            (telegram_id,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def is_bookmarked(self, telegram_id: str, github_id: str) -> bool:
+        """Check if a repo is bookmarked."""
+        cursor = await self._connection.execute(
+            "SELECT 1 FROM bookmarks WHERE telegram_id = ? AND github_id = ?",
+            (telegram_id, github_id),
+        )
+        return await cursor.fetchone() is not None
+
+    # ==================== USER PREFERENCES ====================
+
+    async def get_preferences(self, telegram_id: str) -> dict | None:
+        """Get user preferences."""
+        cursor = await self._connection.execute(
+            "SELECT * FROM user_preferences WHERE telegram_id = ?",
+            (telegram_id,),
+        )
+        row = await cursor.fetchone()
+        if row:
+            prefs = dict(row)
+            prefs["domains"] = json.loads(prefs["domains"])
+            return prefs
+        return None
+
+    async def save_preferences(
+        self,
+        telegram_id: str,
+        domains: list[str] | None = None,
+        min_stars: int | None = None,
+        digest_time: str | None = None,
+    ) -> None:
+        """Save or update user preferences."""
+        existing = await self.get_preferences(telegram_id)
+
+        if existing:
+            updates = {}
+            if domains is not None:
+                updates["domains"] = json.dumps(domains)
+            if min_stars is not None:
+                updates["min_stars"] = min_stars
+            if digest_time is not None:
+                updates["digest_time"] = digest_time
+
+            if updates:
+                updates["updated_at"] = "CURRENT_TIMESTAMP"
+                set_clauses = ", ".join(
+                    f"{k} = ?" if k != "updated_at" else f"{k} = CURRENT_TIMESTAMP"
+                    for k in updates.keys()
+                )
+                values = [v for k, v in updates.items() if k != "updated_at"]
+                await self._connection.execute(
+                    f"UPDATE user_preferences SET {set_clauses} WHERE telegram_id = ?",
+                    (*values, telegram_id),
+                )
+        else:
+            await self._connection.execute(
+                """
+                INSERT INTO user_preferences (telegram_id, domains, min_stars, digest_time)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    telegram_id,
+                    json.dumps(domains or []),
+                    min_stars or 100,
+                    digest_time or "08:00",
+                ),
+            )
+        await self._connection.commit()
+
+    async def get_users_for_digest(self, current_time: str) -> list[dict]:
+        """Get users who should receive digest at this time."""
+        cursor = await self._connection.execute(
+            "SELECT * FROM user_preferences WHERE digest_time = ?",
+            (current_time,),
+        )
+        rows = await cursor.fetchall()
+        result = []
+        for row in rows:
+            prefs = dict(row)
+            prefs["domains"] = json.loads(prefs["domains"])
+            result.append(prefs)
+        return result

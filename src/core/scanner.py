@@ -44,6 +44,7 @@ class GitHubScanner:
         "data": ["data-analysis", "analytics", "database"],
         "infrastructure": ["devops", "kubernetes", "docker"],
         "automation": ["automation", "bot", "scraping"],
+        "web3": ["blockchain", "web3", "ethereum", "solidity", "defi", "nft", "crypto", "smart-contracts"],
     }
 
     def __init__(self) -> None:

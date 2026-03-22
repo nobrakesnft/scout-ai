@@ -1,6 +1,7 @@
 """Telegram bot - Simple and friendly!"""
 
-from datetime import datetime, timedelta
+import asyncio
+from datetime import datetime, timedelta, time
 from typing import Dict, List, Optional
 
 import structlog
@@ -17,8 +18,22 @@ from src.core.scanner import GitHubScanner, Repository
 from src.core.filter import RepoFilter
 from src.core.scorer import RepoScorer, ScoredRepository
 from src.ai.analyzer import AIAnalyzer
+from src.storage.database import Database
 
 logger = structlog.get_logger(__name__)
+
+# Available domains for scanning
+AVAILABLE_DOMAINS = [
+    "ai-ml",
+    "developer-tools",
+    "productivity",
+    "web-dev",
+    "data",
+    "security",
+    "mobile",
+    "devops",
+    "web3",
+]
 
 
 class ScanCache:
@@ -66,6 +81,10 @@ class TelegramBot:
         self.scorer = RepoScorer()
         self.cache = ScanCache()
 
+        # Database
+        self.db = Database()
+        self._db_ready = False
+
         # AI
         try:
             self.analyzer = AIAnalyzer()
@@ -76,11 +95,20 @@ class TelegramBot:
 
         self._register_handlers()
 
+    async def _ensure_db(self) -> None:
+        """Make sure database is connected."""
+        if not self._db_ready:
+            await self.db.connect()
+            self._db_ready = True
+
     def _register_handlers(self) -> None:
         self.app.add_handler(CommandHandler("start", self._cmd_start))
         self.app.add_handler(CommandHandler("find", self._cmd_find))
         self.app.add_handler(CommandHandler("scan", self._cmd_find))  # alias
         self.app.add_handler(CommandHandler("ideas", self._cmd_ideas))
+        self.app.add_handler(CommandHandler("web3", self._cmd_web3))
+        self.app.add_handler(CommandHandler("saved", self._cmd_saved))
+        self.app.add_handler(CommandHandler("settings", self._cmd_settings))
         self.app.add_handler(CommandHandler("help", self._cmd_help))
         self.app.add_handler(CallbackQueryHandler(self._handle_button))
 
@@ -88,10 +116,14 @@ class TelegramBot:
 
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Welcome message - super simple!"""
+        await self._ensure_db()
 
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔍 Find Cool Projects", callback_data="action:find")],
             [InlineKeyboardButton("💡 Find Projects + Get Ideas", callback_data="action:ideas")],
+            [InlineKeyboardButton("🔗 Web3 / Crypto / NFT", callback_data="action:web3")],
+            [InlineKeyboardButton("⭐ My Saved Projects", callback_data="action:saved")],
+            [InlineKeyboardButton("⚙️ Settings", callback_data="action:settings")],
         ])
 
         await update.message.reply_text(
@@ -105,6 +137,8 @@ class TelegramBot:
 
     async def _cmd_find(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Find cool projects - show with buttons."""
+        await self._ensure_db()
+        user_id = str(update.effective_user.id)
 
         await update.message.reply_text(
             "🔍 *Looking for cool projects...*\n\n"
@@ -113,8 +147,17 @@ class TelegramBot:
         )
 
         try:
+            # Check user preferences for domains
+            prefs = await self.db.get_preferences(user_id)
+            domains = prefs.get("domains") if prefs and prefs.get("domains") else None
+            min_stars = prefs.get("min_stars", 50) if prefs else 50
+
             # Scan GitHub
-            repos = self.scanner.scan_trending(min_stars=50, max_results_per_domain=5)
+            repos = self.scanner.scan_trending(
+                domains=domains,
+                min_stars=min_stars,
+                max_results_per_domain=5
+            )
 
             if not repos:
                 await update.message.reply_text("😕 Couldn't find any projects. Try again later!")
@@ -136,7 +179,7 @@ class TelegramBot:
 
             # Send each repo with buttons
             for scored_repo in scored:
-                await self._send_repo_card(update.message.chat_id, scored_repo)
+                await self._send_repo_card(update.message.chat_id, scored_repo, user_id)
 
             # Send footer
             keyboard = InlineKeyboardMarkup([
@@ -156,6 +199,7 @@ class TelegramBot:
 
     async def _cmd_ideas(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Find projects AND get ideas for all of them."""
+        await self._ensure_db()
 
         if not self.ai_enabled:
             await update.message.reply_text(
@@ -172,8 +216,18 @@ class TelegramBot:
         )
 
         try:
+            # Check user preferences
+            user_id = str(update.effective_user.id)
+            prefs = await self.db.get_preferences(user_id)
+            domains = prefs.get("domains") if prefs and prefs.get("domains") else None
+            min_stars = prefs.get("min_stars", 100) if prefs else 100
+
             # Scan
-            repos = self.scanner.scan_trending(min_stars=100, max_results_per_domain=3)
+            repos = self.scanner.scan_trending(
+                domains=domains,
+                min_stars=min_stars,
+                max_results_per_domain=3
+            )
 
             if not repos:
                 await update.message.reply_text("😕 Couldn't find any projects. Try again later!")
@@ -193,18 +247,137 @@ class TelegramBot:
 
             # Analyze each with AI
             for scored_repo in scored:
-                await self._send_repo_with_ideas(update.message.chat_id, scored_repo)
+                await self._send_repo_with_ideas(update.message.chat_id, scored_repo, user_id)
 
             await update.message.reply_text(
                 "✅ *Done!*\n\n"
                 "Use /find to browse more projects\n"
-                "Use /ideas to get more ideas",
+                "Use /ideas to get more ideas\n"
+                "Use /saved to see your bookmarks",
                 parse_mode="Markdown",
             )
 
         except Exception as e:
             logger.exception("Ideas failed", error=str(e))
             await update.message.reply_text(f"😕 Something went wrong: {str(e)[:50]}")
+
+    async def _cmd_web3(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Find Web3/crypto/NFT projects."""
+        await self._ensure_db()
+        user_id = str(update.effective_user.id)
+
+        await update.message.reply_text(
+            "🔗 *Looking for Web3 projects...*\n\n"
+            "Searching blockchain, crypto, NFT, DeFi... ⏳",
+            parse_mode="Markdown",
+        )
+
+        try:
+            # Scan ONLY web3 domain with lower star threshold
+            repos = self.scanner.scan_trending(
+                domains=["web3"],
+                min_stars=25,  # Lower threshold for web3
+                max_results_per_domain=10,
+            )
+
+            if not repos:
+                await update.message.reply_text("😕 No Web3 projects found. Try again later!")
+                return
+
+            # Filter and score
+            filtered = self.filter.filter_repos(repos)
+            scored = self.scorer.score_repos(filtered, top_n=5)
+
+            # Save to cache
+            self.cache.save_scan(scored)
+
+            await update.message.reply_text(
+                f"🔗 *Found {len(scored)} Web3 projects!*\n\n"
+                "Tap any project to get business ideas 👇",
+                parse_mode="Markdown",
+            )
+
+            # Send each repo with buttons
+            for scored_repo in scored:
+                await self._send_repo_card(update.message.chat_id, scored_repo, user_id)
+
+            # Send footer
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("💡 Get Ideas for ALL", callback_data="action:ideas_cached")],
+            ])
+
+            await update.message.reply_text(
+                "👆 *Tap a project above to get ideas*\n\n"
+                "Or get ideas for all of them:",
+                parse_mode="Markdown",
+                reply_markup=keyboard,
+            )
+
+        except Exception as e:
+            logger.exception("Web3 scan failed", error=str(e))
+            await update.message.reply_text(f"😕 Something went wrong: {str(e)[:50]}")
+
+    async def _cmd_saved(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Show saved/bookmarked projects."""
+        await self._ensure_db()
+        user_id = str(update.effective_user.id)
+
+        bookmarks = await self.db.get_bookmarks(user_id)
+
+        if not bookmarks:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔍 Find Projects", callback_data="action:find")],
+            ])
+            await update.message.reply_text(
+                "📭 *No saved projects yet!*\n\n"
+                "Use /find to discover projects, then tap ⭐ to save them.",
+                parse_mode="Markdown",
+                reply_markup=keyboard,
+            )
+            return
+
+        await update.message.reply_text(
+            f"⭐ *Your Saved Projects ({len(bookmarks)})*\n\n"
+            "Here are the projects you bookmarked 👇",
+            parse_mode="Markdown",
+        )
+
+        for bookmark in bookmarks:
+            await self._send_bookmark_card(update.message.chat_id, bookmark, user_id)
+
+    async def _cmd_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Show settings menu."""
+        await self._ensure_db()
+        user_id = str(update.effective_user.id)
+
+        prefs = await self.db.get_preferences(user_id)
+
+        # Current settings display
+        if prefs:
+            domains = prefs.get("domains", [])
+            domains_text = ", ".join(domains) if domains else "All domains"
+            min_stars = prefs.get("min_stars", 50)
+            digest_time = prefs.get("digest_time", "Off")
+        else:
+            domains_text = "All domains"
+            min_stars = 50
+            digest_time = "Off"
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🎯 Choose Domains", callback_data="settings:domains")],
+            [InlineKeyboardButton("⭐ Min Stars", callback_data="settings:stars")],
+            [InlineKeyboardButton("⏰ Daily Digest", callback_data="settings:digest")],
+        ])
+
+        await update.message.reply_text(
+            "⚙️ *Your Settings*\n\n"
+            f"🎯 *Domains:* {domains_text}\n"
+            f"⭐ *Min stars:* {min_stars}\n"
+            f"⏰ *Daily digest:* {digest_time}\n\n"
+            "Tap to change:",
+            parse_mode="Markdown",
+            reply_markup=keyboard,
+        )
 
     async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Help - keep it simple!"""
@@ -214,12 +387,15 @@ class TelegramBot:
             "*Commands:*\n"
             "🔍 /find - Find cool projects\n"
             "💡 /ideas - Find projects + get business ideas\n"
+            "🔗 /web3 - Find crypto/NFT/blockchain projects\n"
+            "⭐ /saved - See your bookmarked projects\n"
+            "⚙️ /settings - Change your preferences\n"
             "❓ /help - See this message\n\n"
             "*How it works:*\n"
             "1️⃣ I search GitHub for trending projects\n"
             "2️⃣ I pick the best ones\n"
-            "3️⃣ You can tap any project to get ideas\n"
-            "4️⃣ I use AI to think of business ideas!\n\n"
+            "3️⃣ You can tap ⭐ to save any project\n"
+            "4️⃣ Tap 💡 to get business ideas!\n\n"
             "That's it! Super easy 🎉",
             parse_mode="Markdown",
         )
@@ -228,31 +404,72 @@ class TelegramBot:
 
     async def _handle_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle button clicks."""
+        await self._ensure_db()
 
         query = update.callback_query
         await query.answer()
 
         data = query.data
+        user_id = str(update.effective_user.id)
+        chat_id = query.message.chat_id
 
         # Action buttons
         if data == "action:find":
-            await self._do_find(query.message.chat_id)
+            await self._do_find(chat_id, user_id)
 
         elif data == "action:ideas":
-            await self._do_ideas(query.message.chat_id)
+            await self._do_ideas(chat_id, user_id)
+
+        elif data == "action:web3":
+            await self._do_web3(chat_id, user_id)
 
         elif data == "action:ideas_cached":
-            await self._do_ideas_cached(query.message.chat_id)
+            await self._do_ideas_cached(chat_id, user_id)
+
+        elif data == "action:saved":
+            await self._do_saved(chat_id, user_id)
+
+        elif data == "action:settings":
+            await self._do_settings(chat_id, user_id)
 
         # Repo buttons
         elif data.startswith("repo:"):
             repo_id = data.split(":")[1]
-            await self._analyze_single_repo(query.message.chat_id, repo_id)
+            await self._analyze_single_repo(chat_id, repo_id)
 
-        elif data.startswith("github:"):
-            pass  # URL button, handled by Telegram
+        elif data.startswith("save:"):
+            repo_id = data.split(":")[1]
+            await self._save_repo(chat_id, user_id, repo_id, query)
 
-    async def _do_find(self, chat_id: int) -> None:
+        elif data.startswith("unsave:"):
+            repo_id = data.split(":")[1]
+            await self._unsave_repo(chat_id, user_id, repo_id)
+
+        # Settings buttons
+        elif data == "settings:domains":
+            await self._show_domain_picker(chat_id, user_id)
+
+        elif data.startswith("domain:"):
+            domain = data.split(":")[1]
+            await self._toggle_domain(chat_id, user_id, domain)
+
+        elif data == "settings:stars":
+            await self._show_stars_picker(chat_id)
+
+        elif data.startswith("stars:"):
+            stars = int(data.split(":")[1])
+            await self._set_min_stars(chat_id, user_id, stars)
+
+        elif data == "settings:digest":
+            await self._show_digest_picker(chat_id)
+
+        elif data.startswith("digest:"):
+            time_str = data.split(":")[1]
+            await self._set_digest_time(chat_id, user_id, time_str)
+
+    # ==================== ACTION HANDLERS ====================
+
+    async def _do_find(self, chat_id: int, user_id: str) -> None:
         """Find projects (triggered by button)."""
 
         await self.app.bot.send_message(
@@ -262,7 +479,15 @@ class TelegramBot:
         )
 
         try:
-            repos = self.scanner.scan_trending(min_stars=50, max_results_per_domain=5)
+            prefs = await self.db.get_preferences(user_id)
+            domains = prefs.get("domains") if prefs and prefs.get("domains") else None
+            min_stars = prefs.get("min_stars", 50) if prefs else 50
+
+            repos = self.scanner.scan_trending(
+                domains=domains,
+                min_stars=min_stars,
+                max_results_per_domain=5
+            )
 
             if not repos:
                 await self.app.bot.send_message(chat_id=chat_id, text="😕 No projects found!")
@@ -279,12 +504,12 @@ class TelegramBot:
             )
 
             for scored_repo in scored:
-                await self._send_repo_card(chat_id, scored_repo)
+                await self._send_repo_card(chat_id, scored_repo, user_id)
 
         except Exception as e:
             await self.app.bot.send_message(chat_id=chat_id, text=f"😕 Error: {str(e)[:50]}")
 
-    async def _do_ideas(self, chat_id: int) -> None:
+    async def _do_ideas(self, chat_id: int, user_id: str) -> None:
         """Full ideas flow (triggered by button)."""
 
         if not self.ai_enabled:
@@ -298,7 +523,15 @@ class TelegramBot:
         )
 
         try:
-            repos = self.scanner.scan_trending(min_stars=100, max_results_per_domain=3)
+            prefs = await self.db.get_preferences(user_id)
+            domains = prefs.get("domains") if prefs and prefs.get("domains") else None
+            min_stars = prefs.get("min_stars", 100) if prefs else 100
+
+            repos = self.scanner.scan_trending(
+                domains=domains,
+                min_stars=min_stars,
+                max_results_per_domain=3
+            )
 
             if not repos:
                 await self.app.bot.send_message(chat_id=chat_id, text="😕 No projects found!")
@@ -309,7 +542,7 @@ class TelegramBot:
             self.cache.save_scan(scored)
 
             for scored_repo in scored:
-                await self._send_repo_with_ideas(chat_id, scored_repo)
+                await self._send_repo_with_ideas(chat_id, scored_repo, user_id)
 
             await self.app.bot.send_message(
                 chat_id=chat_id,
@@ -320,7 +553,43 @@ class TelegramBot:
         except Exception as e:
             await self.app.bot.send_message(chat_id=chat_id, text=f"😕 Error: {str(e)[:50]}")
 
-    async def _do_ideas_cached(self, chat_id: int) -> None:
+    async def _do_web3(self, chat_id: int, user_id: str) -> None:
+        """Find Web3 projects (triggered by button)."""
+
+        await self.app.bot.send_message(
+            chat_id=chat_id,
+            text="🔗 *Looking for Web3 projects...*",
+            parse_mode="Markdown",
+        )
+
+        try:
+            repos = self.scanner.scan_trending(
+                domains=["web3"],
+                min_stars=25,
+                max_results_per_domain=10,
+            )
+
+            if not repos:
+                await self.app.bot.send_message(chat_id=chat_id, text="😕 No Web3 projects found!")
+                return
+
+            filtered = self.filter.filter_repos(repos)
+            scored = self.scorer.score_repos(filtered, top_n=5)
+            self.cache.save_scan(scored)
+
+            await self.app.bot.send_message(
+                chat_id=chat_id,
+                text=f"🔗 *Found {len(scored)} Web3 projects!*\n\nTap any to get ideas 👇",
+                parse_mode="Markdown",
+            )
+
+            for scored_repo in scored:
+                await self._send_repo_card(chat_id, scored_repo, user_id)
+
+        except Exception as e:
+            await self.app.bot.send_message(chat_id=chat_id, text=f"😕 Error: {str(e)[:50]}")
+
+    async def _do_ideas_cached(self, chat_id: int, user_id: str) -> None:
         """Get ideas for already-scanned repos."""
 
         if not self.ai_enabled:
@@ -341,12 +610,70 @@ class TelegramBot:
         )
 
         for scored_repo in self.cache.last_results:
-            await self._send_repo_with_ideas(chat_id, scored_repo)
+            await self._send_repo_with_ideas(chat_id, scored_repo, user_id)
 
         await self.app.bot.send_message(
             chat_id=chat_id,
             text="✅ *All done!*",
             parse_mode="Markdown",
+        )
+
+    async def _do_saved(self, chat_id: int, user_id: str) -> None:
+        """Show saved projects (triggered by button)."""
+
+        bookmarks = await self.db.get_bookmarks(user_id)
+
+        if not bookmarks:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔍 Find Projects", callback_data="action:find")],
+            ])
+            await self.app.bot.send_message(
+                chat_id=chat_id,
+                text="📭 *No saved projects yet!*\n\nUse /find to discover projects, then tap ⭐ to save them.",
+                parse_mode="Markdown",
+                reply_markup=keyboard,
+            )
+            return
+
+        await self.app.bot.send_message(
+            chat_id=chat_id,
+            text=f"⭐ *Your Saved Projects ({len(bookmarks)})*",
+            parse_mode="Markdown",
+        )
+
+        for bookmark in bookmarks:
+            await self._send_bookmark_card(chat_id, bookmark, user_id)
+
+    async def _do_settings(self, chat_id: int, user_id: str) -> None:
+        """Show settings (triggered by button)."""
+
+        prefs = await self.db.get_preferences(user_id)
+
+        if prefs:
+            domains = prefs.get("domains", [])
+            domains_text = ", ".join(domains) if domains else "All domains"
+            min_stars = prefs.get("min_stars", 50)
+            digest_time = prefs.get("digest_time", "Off")
+        else:
+            domains_text = "All domains"
+            min_stars = 50
+            digest_time = "Off"
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🎯 Choose Domains", callback_data="settings:domains")],
+            [InlineKeyboardButton("⭐ Min Stars", callback_data="settings:stars")],
+            [InlineKeyboardButton("⏰ Daily Digest", callback_data="settings:digest")],
+        ])
+
+        await self.app.bot.send_message(
+            chat_id=chat_id,
+            text=f"⚙️ *Your Settings*\n\n"
+                 f"🎯 *Domains:* {domains_text}\n"
+                 f"⭐ *Min stars:* {min_stars}\n"
+                 f"⏰ *Daily digest:* {digest_time}\n\n"
+                 "Tap to change:",
+            parse_mode="Markdown",
+            reply_markup=keyboard,
         )
 
     async def _analyze_single_repo(self, chat_id: int, repo_id: str) -> None:
@@ -413,17 +740,179 @@ class TelegramBot:
                 text=f"😕 Couldn't analyze: {str(e)[:50]}"
             )
 
+    # ==================== BOOKMARK HANDLERS ====================
+
+    async def _save_repo(self, chat_id: int, user_id: str, repo_id: str, query) -> None:
+        """Save a repo to bookmarks."""
+
+        repo = self.cache.get_repo(repo_id)
+        if not repo:
+            await self.app.bot.send_message(chat_id=chat_id, text="😕 Can't find that project!")
+            return
+
+        saved = await self.db.save_bookmark(
+            telegram_id=user_id,
+            github_id=repo.github_id,
+            name=repo.name,
+            full_name=repo.full_name,
+            description=repo.description,
+            url=repo.url,
+            stars=repo.stars,
+            language=repo.language,
+        )
+
+        if saved:
+            await query.answer("⭐ Saved!", show_alert=False)
+        else:
+            await query.answer("Already saved!", show_alert=False)
+
+    async def _unsave_repo(self, chat_id: int, user_id: str, repo_id: str) -> None:
+        """Remove a repo from bookmarks."""
+
+        removed = await self.db.remove_bookmark(user_id, repo_id)
+
+        if removed:
+            await self.app.bot.send_message(chat_id=chat_id, text="🗑️ Removed from saved!")
+        else:
+            await self.app.bot.send_message(chat_id=chat_id, text="😕 Wasn't saved!")
+
+    # ==================== SETTINGS HANDLERS ====================
+
+    async def _show_domain_picker(self, chat_id: int, user_id: str) -> None:
+        """Show domain selection."""
+
+        prefs = await self.db.get_preferences(user_id)
+        current_domains = prefs.get("domains", []) if prefs else []
+
+        buttons = []
+        for domain in AVAILABLE_DOMAINS:
+            check = "✅" if domain in current_domains else "⬜"
+            buttons.append([
+                InlineKeyboardButton(f"{check} {domain}", callback_data=f"domain:{domain}")
+            ])
+
+        buttons.append([InlineKeyboardButton("✔️ Done", callback_data="action:settings")])
+
+        keyboard = InlineKeyboardMarkup(buttons)
+
+        await self.app.bot.send_message(
+            chat_id=chat_id,
+            text="🎯 *Choose domains to scan*\n\n"
+                 "Tap to select/deselect.\n"
+                 "Leave all unchecked to scan everything.",
+            parse_mode="Markdown",
+            reply_markup=keyboard,
+        )
+
+    async def _toggle_domain(self, chat_id: int, user_id: str, domain: str) -> None:
+        """Toggle a domain on/off."""
+
+        prefs = await self.db.get_preferences(user_id)
+        current_domains = prefs.get("domains", []) if prefs else []
+
+        if domain in current_domains:
+            current_domains.remove(domain)
+        else:
+            current_domains.append(domain)
+
+        await self.db.save_preferences(user_id, domains=current_domains)
+
+        # Refresh the picker
+        await self._show_domain_picker(chat_id, user_id)
+
+    async def _show_stars_picker(self, chat_id: int) -> None:
+        """Show minimum stars selection."""
+
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("25+", callback_data="stars:25"),
+                InlineKeyboardButton("50+", callback_data="stars:50"),
+            ],
+            [
+                InlineKeyboardButton("100+", callback_data="stars:100"),
+                InlineKeyboardButton("500+", callback_data="stars:500"),
+            ],
+            [
+                InlineKeyboardButton("1000+", callback_data="stars:1000"),
+            ],
+        ])
+
+        await self.app.bot.send_message(
+            chat_id=chat_id,
+            text="⭐ *Minimum stars for projects*\n\n"
+                 "Higher = more popular projects\n"
+                 "Lower = newer discoveries",
+            parse_mode="Markdown",
+            reply_markup=keyboard,
+        )
+
+    async def _set_min_stars(self, chat_id: int, user_id: str, stars: int) -> None:
+        """Set minimum stars preference."""
+
+        await self.db.save_preferences(user_id, min_stars=stars)
+
+        await self.app.bot.send_message(
+            chat_id=chat_id,
+            text=f"✅ Set to {stars}+ stars!",
+        )
+
+    async def _show_digest_picker(self, chat_id: int) -> None:
+        """Show daily digest time selection."""
+
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🌅 8:00 AM", callback_data="digest:08:00"),
+                InlineKeyboardButton("☀️ 12:00 PM", callback_data="digest:12:00"),
+            ],
+            [
+                InlineKeyboardButton("🌆 6:00 PM", callback_data="digest:18:00"),
+                InlineKeyboardButton("🌙 9:00 PM", callback_data="digest:21:00"),
+            ],
+            [
+                InlineKeyboardButton("🚫 Turn Off", callback_data="digest:off"),
+            ],
+        ])
+
+        await self.app.bot.send_message(
+            chat_id=chat_id,
+            text="⏰ *Daily Digest Time*\n\n"
+                 "I'll send you trending projects automatically!\n\n"
+                 "Pick a time (or turn off):",
+            parse_mode="Markdown",
+            reply_markup=keyboard,
+        )
+
+    async def _set_digest_time(self, chat_id: int, user_id: str, time_str: str) -> None:
+        """Set daily digest time."""
+
+        if time_str == "off":
+            await self.db.save_preferences(user_id, digest_time="off")
+            await self.app.bot.send_message(chat_id=chat_id, text="🚫 Daily digest turned off!")
+        else:
+            await self.db.save_preferences(user_id, digest_time=time_str)
+            await self.app.bot.send_message(chat_id=chat_id, text=f"✅ Daily digest set for {time_str}!")
+
     # ==================== HELPERS ====================
 
-    async def _send_repo_card(self, chat_id: int, scored_repo: ScoredRepository) -> None:
+    async def _send_repo_card(self, chat_id: int, scored_repo: ScoredRepository, user_id: str) -> None:
         """Send a repo card with buttons."""
 
         repo = scored_repo.repository
         desc = (repo.description or "No description")[:80]
 
+        # Check if already bookmarked
+        is_saved = await self.db.is_bookmarked(user_id, repo.github_id)
+        save_btn = InlineKeyboardButton(
+            "✅ Saved" if is_saved else "⭐ Save",
+            callback_data=f"save:{repo.github_id}"
+        )
+
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("💡 Get Ideas", callback_data=f"repo:{repo.github_id}"),
+                save_btn,
+            ],
+            [
                 InlineKeyboardButton("🔗 Open GitHub", url=repo.url),
             ]
         ])
@@ -442,7 +931,33 @@ class TelegramBot:
             disable_web_page_preview=True,
         )
 
-    async def _send_repo_with_ideas(self, chat_id: int, scored_repo: ScoredRepository) -> None:
+    async def _send_bookmark_card(self, chat_id: int, bookmark: dict, user_id: str) -> None:
+        """Send a bookmark card with buttons."""
+
+        desc = (bookmark.get("description") or "No description")[:80]
+
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🗑️ Remove", callback_data=f"unsave:{bookmark['github_id']}"),
+                InlineKeyboardButton("🔗 Open GitHub", url=bookmark["url"]),
+            ]
+        ])
+
+        text = (
+            f"📦 *{bookmark['name']}*\n"
+            f"⭐ {bookmark['stars']:,} stars | 🔤 {bookmark.get('language') or 'Unknown'}\n\n"
+            f"_{desc}_"
+        )
+
+        await self.app.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode="Markdown",
+            reply_markup=keyboard,
+            disable_web_page_preview=True,
+        )
+
+    async def _send_repo_with_ideas(self, chat_id: int, scored_repo: ScoredRepository, user_id: str) -> None:
         """Send repo + AI analysis + ideas."""
 
         repo = scored_repo.repository
@@ -471,8 +986,15 @@ class TelegramBot:
                         f"💵 {idea.monetization} | 📊 Difficulty: {idea.feasibility}/10",
                     ])
 
+            # Check if already bookmarked
+            is_saved = await self.db.is_bookmarked(user_id, repo.github_id)
+            save_btn = InlineKeyboardButton(
+                "✅ Saved" if is_saved else "⭐ Save",
+                callback_data=f"save:{repo.github_id}"
+            )
+
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔗 Open GitHub", url=repo.url)]
+                [save_btn, InlineKeyboardButton("🔗 Open GitHub", url=repo.url)]
             ])
 
             await self.app.bot.send_message(
@@ -490,7 +1012,15 @@ class TelegramBot:
                 parse_mode="Markdown",
             )
 
+    async def post_init(self, app) -> None:
+        """Called after bot starts - initialize scheduler."""
+        from src.delivery.scheduler import DigestScheduler
+        self.scheduler = DigestScheduler(app)
+        self.scheduler.start()
+        logger.info("Daily digest scheduler started")
+
     def run_polling(self) -> None:
         """Start the bot!"""
         logger.info("Starting bot...")
+        self.app.post_init = self.post_init
         self.app.run_polling(allowed_updates=Update.ALL_TYPES)
