@@ -1,4 +1,4 @@
-"""Daily digest scheduler - sends trending repos at scheduled times."""
+"""Daily digest scheduler - sends trending repos with AI ideas at scheduled times."""
 
 import asyncio
 from datetime import datetime
@@ -11,12 +11,13 @@ from src.storage.database import Database
 from src.core.scanner import GitHubScanner
 from src.core.filter import RepoFilter
 from src.core.scorer import RepoScorer
+from src.ai.analyzer import AIAnalyzer
 
 logger = structlog.get_logger(__name__)
 
 
 class DigestScheduler:
-    """Sends daily digests to users at their preferred times."""
+    """Sends daily digests with AI-generated business ideas."""
 
     def __init__(self, bot_app):
         """
@@ -32,6 +33,14 @@ class DigestScheduler:
         self.scorer = RepoScorer()
         self.scheduler = AsyncIOScheduler()
         self._db_ready = False
+
+        # AI analyzer
+        try:
+            self.analyzer = AIAnalyzer()
+            self.ai_enabled = True
+        except:
+            self.analyzer = None
+            self.ai_enabled = False
 
     async def _ensure_db(self) -> None:
         """Make sure database is connected."""
@@ -79,7 +88,7 @@ class DigestScheduler:
             logger.exception("Digest check failed", error=str(e))
 
     async def _send_digest_to_user(self, user_prefs: dict) -> None:
-        """Send a digest to a specific user. 5 regular repos + 5 Web3 = 10 total."""
+        """Send a digest with AI ideas. 5 regular + 5 Web3 = 10 total (only NEW repos)."""
         try:
             telegram_id = user_prefs["telegram_id"]
             domains = user_prefs.get("domains") or None
@@ -87,23 +96,30 @@ class DigestScheduler:
 
             logger.info(f"Sending digest to user {telegram_id}")
 
-            # 1. Scan for regular trending repos (5)
+            # Get repos this user has already seen
+            seen_ids = await self.db.get_seen_repo_ids_for_user(telegram_id)
+
+            # 1. Scan for regular trending repos
             regular_repos = self.scanner.scan_trending(
                 domains=domains,
                 min_stars=min_stars,
-                max_results_per_domain=3,
-            )
-
-            # 2. Scan for Web3 repos (2) - always included!
-            web3_repos = self.scanner.scan_trending(
-                domains=["web3"],
-                min_stars=25,  # Lower threshold for web3
                 max_results_per_domain=5,
             )
 
-            # Filter and score both sets
-            regular_filtered = self.filter.filter_repos(regular_repos) if regular_repos else []
-            web3_filtered = self.filter.filter_repos(web3_repos) if web3_repos else []
+            # 2. Scan for Web3 repos
+            web3_repos = self.scanner.scan_trending(
+                domains=["web3"],
+                min_stars=25,
+                max_results_per_domain=10,
+            )
+
+            # Filter out already seen repos
+            regular_repos_new = [r for r in regular_repos if r.github_id not in seen_ids] if regular_repos else []
+            web3_repos_new = [r for r in web3_repos if r.github_id not in seen_ids] if web3_repos else []
+
+            # Filter and score
+            regular_filtered = self.filter.filter_repos(regular_repos_new) if regular_repos_new else []
+            web3_filtered = self.filter.filter_repos(web3_repos_new) if web3_repos_new else []
 
             regular_scored = self.scorer.score_repos(regular_filtered, top_n=5)
 
@@ -112,12 +128,13 @@ class DigestScheduler:
             web3_filtered_deduped = [r for r in web3_filtered if r.github_id not in regular_ids]
             web3_scored = self.scorer.score_repos(web3_filtered_deduped, top_n=5)
 
-            total_count = len(regular_scored) + len(web3_scored)
+            all_scored = regular_scored + web3_scored
+            total_count = len(all_scored)
 
             if total_count == 0:
                 await self.bot_app.bot.send_message(
                     chat_id=int(telegram_id),
-                    text="📫 *Daily Digest*\n\nNo new trending projects today. Check back tomorrow!",
+                    text="📫 *Daily Digest*\n\nNo new projects today - you've seen all the trending ones! Check back tomorrow.",
                     parse_mode="Markdown",
                 )
                 return
@@ -126,54 +143,87 @@ class DigestScheduler:
             await self.bot_app.bot.send_message(
                 chat_id=int(telegram_id),
                 text=f"📫 *Your Daily Digest*\n\n"
-                     f"Found {total_count} trending projects for you! 👇",
+                     f"Found {total_count} NEW projects with business ideas! 👇",
                 parse_mode="Markdown",
             )
 
-            # Send regular repos
+            # Track repos we're sending (to mark as seen)
+            sent_repo_ids = []
+
+            # Send regular repos with AI ideas
             if regular_scored:
                 await self.bot_app.bot.send_message(
                     chat_id=int(telegram_id),
-                    text="🔥 *Trending Projects*",
+                    text="🔥 *Trending Projects + Ideas*",
                     parse_mode="Markdown",
                 )
 
                 for scored_repo in regular_scored:
-                    await self._send_repo_message(telegram_id, scored_repo)
+                    await self._send_repo_with_ideas(telegram_id, scored_repo)
+                    sent_repo_ids.append(scored_repo.repository.github_id)
 
-            # Send Web3 repos
+            # Send Web3 repos with AI ideas
             if web3_scored:
                 await self.bot_app.bot.send_message(
                     chat_id=int(telegram_id),
-                    text="🔗 *Web3 / Crypto Projects*",
+                    text="🔗 *Web3 / Crypto Projects + Ideas*",
                     parse_mode="Markdown",
                 )
 
                 for scored_repo in web3_scored:
-                    await self._send_repo_message(telegram_id, scored_repo)
+                    await self._send_repo_with_ideas(telegram_id, scored_repo)
+                    sent_repo_ids.append(scored_repo.repository.github_id)
+
+            # Mark all sent repos as seen
+            await self.db.mark_repos_as_seen(telegram_id, sent_repo_ids)
 
             # Send footer
             await self.bot_app.bot.send_message(
                 chat_id=int(telegram_id),
-                text="Use /find to explore more, /web3 for crypto, or /settings to change digest time.",
+                text=f"✅ *{total_count} projects with {total_count * 2} business ideas!*\n\n"
+                     "Use /find to explore more, /web3 for crypto, or /settings to change preferences.",
+                parse_mode="Markdown",
             )
 
-            logger.info(f"Digest sent to user {telegram_id}", total_repos=total_count)
+            logger.info(f"Digest sent to user {telegram_id}", total_repos=total_count, ideas=total_count * 2)
 
         except Exception as e:
             logger.exception(f"Failed to send digest to user", error=str(e))
 
-    async def _send_repo_message(self, telegram_id: str, scored_repo) -> None:
-        """Send a single repo message."""
+    async def _send_repo_with_ideas(self, telegram_id: str, scored_repo) -> None:
+        """Send a repo with AI-generated business ideas."""
         repo = scored_repo.repository
-        desc = (repo.description or "No description")[:80]
+        desc = (repo.description or "No description")[:100]
 
+        # Try to get AI ideas
+        ideas_text = ""
+        if self.ai_enabled and self.analyzer:
+            try:
+                analysis, ideas = self.analyzer.analyze_and_ideate(repo)
+
+                if ideas:
+                    ideas_lines = []
+                    for i, idea in enumerate(ideas, 1):
+                        ideas_lines.append(
+                            f"💡 *{i}. {idea.title}*\n"
+                            f"{idea.description}\n"
+                            f"💵 {idea.monetization} | 📊 Difficulty: {idea.feasibility}/10"
+                        )
+                    ideas_text = "\n\n".join(ideas_lines)
+            except Exception as e:
+                logger.warning(f"AI analysis failed for {repo.name}", error=str(e))
+
+        # Build message
         text = (
+            f"{'─' * 25}\n"
             f"📦 *{repo.name}*\n"
             f"⭐ {repo.stars:,} stars | 🔤 {repo.language or 'Unknown'}\n\n"
             f"_{desc}_\n\n"
             f"🔗 {repo.url}"
         )
+
+        if ideas_text:
+            text += f"\n\n{ideas_text}"
 
         await self.bot_app.bot.send_message(
             chat_id=int(telegram_id),

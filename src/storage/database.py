@@ -130,11 +130,20 @@ class Database:
                 UNIQUE(telegram_id, github_id)
             );
 
+            CREATE TABLE IF NOT EXISTS seen_repos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id TEXT NOT NULL,
+                github_id TEXT NOT NULL,
+                seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(telegram_id, github_id)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_repos_github_id ON repositories(github_id);
             CREATE INDEX IF NOT EXISTS idx_repos_discovered ON repositories(discovered_at);
             CREATE INDEX IF NOT EXISTS idx_ideas_status ON ideas(status);
             CREATE INDEX IF NOT EXISTS idx_runs_started ON runs(started_at);
             CREATE INDEX IF NOT EXISTS idx_bookmarks_user ON bookmarks(telegram_id);
+            CREATE INDEX IF NOT EXISTS idx_seen_repos_user ON seen_repos(telegram_id);
         """)
         await self._connection.commit()
 
@@ -331,3 +340,35 @@ class Database:
             prefs["domains"] = json.loads(prefs["domains"])
             result.append(prefs)
         return result
+
+    # ==================== SEEN REPOS (for digest) ====================
+
+    async def get_seen_repo_ids_for_user(self, telegram_id: str) -> set[str]:
+        """Get all repo IDs this user has seen in digests."""
+        cursor = await self._connection.execute(
+            "SELECT github_id FROM seen_repos WHERE telegram_id = ?",
+            (telegram_id,),
+        )
+        rows = await cursor.fetchall()
+        return {row["github_id"] for row in rows}
+
+    async def mark_repos_as_seen(self, telegram_id: str, github_ids: list[str]) -> None:
+        """Mark repos as seen by this user."""
+        for github_id in github_ids:
+            try:
+                await self._connection.execute(
+                    "INSERT INTO seen_repos (telegram_id, github_id) VALUES (?, ?)",
+                    (telegram_id, github_id),
+                )
+            except:
+                pass  # Already seen, ignore
+        await self._connection.commit()
+
+    async def clear_seen_repos(self, telegram_id: str) -> int:
+        """Clear seen repos for a user. Returns count cleared."""
+        cursor = await self._connection.execute(
+            "DELETE FROM seen_repos WHERE telegram_id = ?",
+            (telegram_id,),
+        )
+        await self._connection.commit()
+        return cursor.rowcount
